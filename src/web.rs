@@ -71,7 +71,6 @@ impl ChannelAdapter for WebAdapter {
 #[derive(Clone)]
 struct WebState {
     app_state: Arc<AppState>,
-    legacy_auth_token: Option<String>,
     bootstrap_token: Arc<Mutex<Option<String>>>,
     run_hub: RunHub,
     session_hub: SessionHub,
@@ -835,7 +834,6 @@ struct UpdateConfigRequest {
     web_enabled: Option<bool>,
     web_host: Option<String>,
     web_port: Option<u16>,
-    web_auth_token: Option<Option<String>>,
     web_max_inflight_per_session: Option<usize>,
     web_max_requests_per_window: Option<usize>,
     web_rate_window_seconds: Option<u64>,
@@ -947,12 +945,10 @@ fn is_sensitive_config_key(key: &str) -> bool {
         "api_key",
         "openai_api_key",
         "embedding_api_key",
-        "web_auth_token",
         "telegram_bot_token",
         "discord_bot_token",
         "bot_token",
         "app_token",
-        "auth_token",
         "token",
         "secret",
         "password",
@@ -1637,7 +1633,7 @@ pub async fn start_web_server(state: Arc<AppState>) {
         .ok()
         .flatten()
         .is_some();
-    if state.config.web_auth_token.is_none() && !has_password {
+    if !has_password {
         let default_hash = make_password_hash(DEFAULT_WEB_PASSWORD);
         let _ = call_blocking(state.db.clone(), move |db| {
             db.upsert_auth_password_hash(&default_hash)
@@ -1660,7 +1656,6 @@ pub async fn start_web_server(state: Arc<AppState>) {
         Some(token)
     };
     let web_state = WebState {
-        legacy_auth_token: state.config.web_auth_token.clone(),
         bootstrap_token: Arc::new(Mutex::new(bootstrap_token)),
         app_state: state.clone(),
         run_hub: RunHub::default(),
@@ -1964,14 +1959,9 @@ mod tests {
         test_state_with_config(llm, test_config_template())
     }
 
-    fn test_web_state_from_app_state(
-        state: Arc<AppState>,
-        auth_token: Option<String>,
-        limits: WebLimits,
-    ) -> WebState {
+    fn test_web_state_from_app_state(state: Arc<AppState>, limits: WebLimits) -> WebState {
         WebState {
             app_state: state,
-            legacy_auth_token: auth_token,
             bootstrap_token: Arc::new(Mutex::new(None)),
             run_hub: RunHub::default(),
             session_hub: SessionHub::default(),
@@ -1983,17 +1973,13 @@ mod tests {
         }
     }
 
-    fn test_web_state(
-        llm: Box<dyn LlmProvider>,
-        auth_token: Option<String>,
-        limits: WebLimits,
-    ) -> WebState {
-        test_web_state_from_app_state(test_state(llm), auth_token, limits)
+    fn test_web_state(llm: Box<dyn LlmProvider>, limits: WebLimits) -> WebState {
+        test_web_state_from_app_state(test_state(llm), limits)
     }
 
     #[tokio::test]
     async fn test_send_stream_then_stream_done() {
-        let web_state = test_web_state(Box::new(DummyLlm), None, WebLimits::default());
+        let web_state = test_web_state(Box::new(DummyLlm), WebLimits::default());
         let app = build_router(web_state);
 
         let req = Request::builder()
@@ -2029,11 +2015,12 @@ mod tests {
 
     #[tokio::test]
     async fn test_auth_failure_requires_header() {
-        let web_state = test_web_state(
-            Box::new(DummyLlm),
-            Some("secret-token".into()),
-            WebLimits::default(),
-        );
+        let web_state = test_web_state(Box::new(DummyLlm), WebLimits::default());
+        call_blocking(web_state.app_state.db.clone(), |db| {
+            db.upsert_auth_password_hash(&make_password_hash("passw0rd!"))
+        })
+        .await
+        .unwrap();
         let app = build_router(web_state);
 
         let req = Request::builder()
@@ -2047,7 +2034,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_api_health_includes_scheduler_and_reflector_status() {
-        let web_state = test_web_state(Box::new(DummyLlm), None, WebLimits::default());
+        let web_state = test_web_state(Box::new(DummyLlm), WebLimits::default());
         let app = build_router(web_state);
 
         let req = Request::builder()
@@ -2085,7 +2072,7 @@ mod tests {
             run_history_limit: 128,
             session_idle_ttl: Duration::from_secs(60),
         };
-        let web_state = test_web_state(Box::new(SlowLlm { sleep_ms: 300 }), None, limits);
+        let web_state = test_web_state(Box::new(SlowLlm { sleep_ms: 300 }), limits);
         let app = build_router(web_state);
 
         let req1 = Request::builder()
@@ -2124,7 +2111,7 @@ mod tests {
             run_history_limit: 128,
             session_idle_ttl: Duration::from_secs(60),
         };
-        let web_state = test_web_state(Box::new(SlowLlm { sleep_ms: 300 }), None, limits);
+        let web_state = test_web_state(Box::new(SlowLlm { sleep_ms: 300 }), limits);
         let app = build_router(web_state);
 
         let req1 = Request::builder()
@@ -2160,7 +2147,6 @@ mod tests {
             Box::new(ToolFlowLlm {
                 calls: AtomicUsize::new(0),
             }),
-            None,
             WebLimits::default(),
         );
         let app = build_router(web_state);
@@ -2234,7 +2220,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_reconnect_from_last_event_id_gets_non_empty_replay() {
-        let web_state = test_web_state(Box::new(DummyLlm), None, WebLimits::default());
+        let web_state = test_web_state(Box::new(DummyLlm), WebLimits::default());
         let app = build_router(web_state);
 
         let req = Request::builder()
@@ -2294,7 +2280,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_api_usage_returns_report() {
-        let web_state = test_web_state(Box::new(DummyLlm), None, WebLimits::default());
+        let web_state = test_web_state(Box::new(DummyLlm), WebLimits::default());
         let db = web_state.app_state.db.clone();
         call_blocking(db, |d| {
             d.upsert_chat(123, Some("main"), "web")?;
@@ -2336,7 +2322,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_api_memory_observability_returns_series() {
-        let web_state = test_web_state(Box::new(DummyLlm), None, WebLimits::default());
+        let web_state = test_web_state(Box::new(DummyLlm), WebLimits::default());
         let db = web_state.app_state.db.clone();
         let started_at_dt = chrono::Utc::now() - chrono::Duration::minutes(1);
         let started_at = started_at_dt.to_rfc3339();
@@ -2396,7 +2382,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_read_endpoints_unknown_session_return_404_without_creating_chat() {
-        let web_state = test_web_state(Box::new(DummyLlm), None, WebLimits::default());
+        let web_state = test_web_state(Box::new(DummyLlm), WebLimits::default());
         let db = web_state.app_state.db.clone();
         let read_key = "mk_read_only";
         call_blocking(db.clone(), move |d| {
@@ -2443,7 +2429,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_read_endpoints_resolve_session_older_than_recent_limit() {
-        let web_state = test_web_state(Box::new(DummyLlm), None, WebLimits::default());
+        let web_state = test_web_state(Box::new(DummyLlm), WebLimits::default());
         let db = web_state.app_state.db.clone();
         let read_key = "mk_read_old";
         call_blocking(db.clone(), move |d| {
@@ -2511,7 +2497,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_web_session_key_resolves_to_channel_scoped_chat_id() {
-        let web_state = test_web_state(Box::new(DummyLlm), None, WebLimits::default());
+        let web_state = test_web_state(Box::new(DummyLlm), WebLimits::default());
         let app = build_router(web_state.clone());
 
         let req = Request::builder()
@@ -2547,7 +2533,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_sessions_fork_copies_messages_and_meta() {
-        let web_state = test_web_state(Box::new(DummyLlm), None, WebLimits::default());
+        let web_state = test_web_state(Box::new(DummyLlm), WebLimits::default());
         let app = build_router(web_state.clone());
 
         let seed_req = Request::builder()
@@ -2610,7 +2596,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_metrics_endpoints_return_data() {
-        let web_state = test_web_state(Box::new(DummyLlm), None, WebLimits::default());
+        let web_state = test_web_state(Box::new(DummyLlm), WebLimits::default());
         let app = build_router(web_state);
 
         let send_req = Request::builder()
@@ -2752,7 +2738,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_config_self_check_returns_warnings() {
-        let web_state = test_web_state(Box::new(DummyLlm), None, WebLimits::default());
+        let web_state = test_web_state(Box::new(DummyLlm), WebLimits::default());
         let app = build_router(web_state);
 
         let req = Request::builder()
@@ -2787,7 +2773,7 @@ mod tests {
             .unwrap(),
         );
         let state = test_state_with_config(Box::new(DummyLlm), cfg);
-        let web_state = test_web_state_from_app_state(state, None, WebLimits::default());
+        let web_state = test_web_state_from_app_state(state, WebLimits::default());
         let app = build_router(web_state);
 
         let req = Request::builder()
@@ -2824,7 +2810,7 @@ mod tests {
         cfg.compact_keep_recent = 20;
         cfg.memory_token_budget = 300;
         let state = test_state_with_config(Box::new(DummyLlm), cfg);
-        let web_state = test_web_state_from_app_state(state, None, WebLimits::default());
+        let web_state = test_web_state_from_app_state(state, WebLimits::default());
         let app = build_router(web_state);
 
         let req = Request::builder()
@@ -2881,7 +2867,7 @@ mod tests {
         })
         .await
         .unwrap();
-        let web_state = test_web_state_from_app_state(state, None, WebLimits::default());
+        let web_state = test_web_state_from_app_state(state, WebLimits::default());
         let app = build_router(web_state);
 
         let req = Request::builder()
@@ -2914,7 +2900,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_sessions_tree_returns_fork_metadata() {
-        let web_state = test_web_state(Box::new(DummyLlm), None, WebLimits::default());
+        let web_state = test_web_state(Box::new(DummyLlm), WebLimits::default());
         let app = build_router(web_state.clone());
 
         let seed_req = Request::builder()
@@ -2964,7 +2950,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_web_send_model_slash_command() {
-        let web_state = test_web_state(Box::new(DummyLlm), None, WebLimits::default());
+        let web_state = test_web_state(Box::new(DummyLlm), WebLimits::default());
         let app = build_router(web_state);
 
         let req = Request::builder()
@@ -2990,7 +2976,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_web_clear_slash_keeps_scheduled_tasks() {
-        let web_state = test_web_state(Box::new(DummyLlm), None, WebLimits::default());
+        let web_state = test_web_state(Box::new(DummyLlm), WebLimits::default());
         let app = build_router(web_state.clone());
         let db = web_state.app_state.db.clone();
         call_blocking(db, move |d| {
@@ -3077,7 +3063,7 @@ commands:
         cfg.plugins.dir = Some(plugin_dir.to_string_lossy().to_string());
 
         let state = test_state_with_config(Box::new(DummyLlm), cfg);
-        let web_state = test_web_state_from_app_state(state, None, WebLimits::default());
+        let web_state = test_web_state_from_app_state(state, WebLimits::default());
         let app = build_router(web_state);
 
         let req = Request::builder()
@@ -3104,7 +3090,7 @@ commands:
 
     #[tokio::test]
     async fn test_cookie_write_requires_csrf_header() {
-        let web_state = test_web_state(Box::new(DummyLlm), None, WebLimits::default());
+        let web_state = test_web_state(Box::new(DummyLlm), WebLimits::default());
         let app = build_router(web_state.clone());
         let hash = make_password_hash("passw0rd!");
         let db = web_state.app_state.db.clone();
@@ -3161,7 +3147,7 @@ commands:
     }
     #[tokio::test]
     async fn test_stream_run_is_owner_isolated_for_api_keys() {
-        let web_state = test_web_state(Box::new(DummyLlm), None, WebLimits::default());
+        let web_state = test_web_state(Box::new(DummyLlm), WebLimits::default());
         let db = web_state.app_state.db.clone();
         call_blocking(db, move |d| {
             let scopes = vec!["operator.read".to_string(), "operator.write".to_string()];
@@ -3231,7 +3217,7 @@ commands:
 
     #[tokio::test]
     async fn test_approvals_scoped_key_cannot_rotate_or_revoke_api_keys() {
-        let web_state = test_web_state(Box::new(DummyLlm), None, WebLimits::default());
+        let web_state = test_web_state(Box::new(DummyLlm), WebLimits::default());
         let db = web_state.app_state.db.clone();
         let target_id = call_blocking(db, move |d| {
             d.upsert_auth_password_hash(&make_password_hash("passw0rd!"))?;
@@ -3295,14 +3281,6 @@ commands:
             }))
             .unwrap(),
         );
-        cfg.channels.insert(
-            "web".to_string(),
-            serde_yaml::to_value(json!({
-                "auth_token": "web-auth-secret"
-            }))
-            .unwrap(),
-        );
-
         let redacted = redact_config(&cfg);
         assert_eq!(
             redacted.get("clawhub_token").and_then(|v| v.as_str()),
@@ -3315,12 +3293,6 @@ commands:
             Some("***")
         );
         assert_eq!(
-            redacted
-                .pointer("/channels/web/auth_token")
-                .and_then(|v| v.as_str()),
-            Some("***")
-        );
-        assert_eq!(
             redacted.get("max_tokens").and_then(|v| v.as_u64()),
             Some(cfg.max_tokens as u64)
         );
@@ -3328,7 +3300,7 @@ commands:
 
     #[tokio::test]
     async fn test_password_bootstrap_token_is_required_and_one_time() {
-        let web_state = test_web_state(Box::new(DummyLlm), None, WebLimits::default());
+        let web_state = test_web_state(Box::new(DummyLlm), WebLimits::default());
         {
             let mut guard = web_state.bootstrap_token.lock().await;
             *guard = Some("bootstrap-123".to_string());
@@ -3370,30 +3342,6 @@ commands:
             .unwrap();
         let second_resp = app.oneshot(second_try).await.unwrap();
         assert_eq!(second_resp.status(), StatusCode::UNAUTHORIZED);
-    }
-
-    #[tokio::test]
-    async fn test_password_bootstrap_token_works_with_legacy_auth_token_present() {
-        let web_state = test_web_state(
-            Box::new(DummyLlm),
-            Some("legacy-token".to_string()),
-            WebLimits::default(),
-        );
-        {
-            let mut guard = web_state.bootstrap_token.lock().await;
-            *guard = Some("bootstrap-legacy-123".to_string());
-        }
-        let app = build_router(web_state.clone());
-
-        let with_token = Request::builder()
-            .method("POST")
-            .uri("/api/auth/password")
-            .header("content-type", "application/json")
-            .header("x-bootstrap-token", "bootstrap-legacy-123")
-            .body(Body::from(r#"{"password":"passw0rd!"}"#))
-            .unwrap();
-        let ok_resp = app.oneshot(with_token).await.unwrap();
-        assert_eq!(ok_resp.status(), StatusCode::OK);
     }
 
     #[test]
