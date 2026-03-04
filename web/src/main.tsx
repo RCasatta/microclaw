@@ -321,7 +321,7 @@ const DYNAMIC_CHANNELS: DynChannelDef[] = [
       { yamlKey: 'bot_username', label: 'slack_bot_username', placeholder: 'slack_bot_name', description: 'Optional Slack-specific bot username override.', secret: false },
       { yamlKey: 'model', label: 'slack_model', placeholder: 'claude-sonnet-4-5-20250929', description: 'Optional Slack bot model override for this account.', secret: false },
       { yamlKey: 'capture_unmentioned_images', label: 'slack_capture_unmentioned_images', placeholder: 'false', description: 'Capture inbound images without @mention in group channels (true/false). Default: false.', secret: false, valueType: 'bool' },
-      { yamlKey: 'inbound_image_max_bytes', label: 'slack_inbound_image_max_bytes', placeholder: '10485760', description: 'Max inbound Slack image size in bytes. Default: 10485760 (10MB).', secret: false, valueType: 'number' },
+      { yamlKey: 'inbound_image_max_mb', label: 'slack_inbound_image_max_mb', placeholder: '20', description: 'Max inbound Slack image size in MB. Default: 20.', secret: false, valueType: 'number' },
     ],
   },
   {

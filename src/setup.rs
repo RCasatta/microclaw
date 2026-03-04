@@ -351,7 +351,7 @@ fn dynamic_field_is_bool(channel: &str, yaml_key: &str) -> bool {
 }
 
 fn dynamic_field_is_u64(channel: &str, yaml_key: &str) -> bool {
-    matches!((channel, yaml_key), ("slack", "inbound_image_max_bytes"))
+    matches!((channel, yaml_key), ("slack", "inbound_image_max_mb"))
 }
 
 fn parse_bot_count(value: &str, field_key: &str) -> Result<usize, MicroClawError> {
@@ -5867,9 +5867,9 @@ sandbox:
     }
 
     #[test]
-    fn test_save_config_yaml_writes_slack_inbound_image_max_bytes_as_number() {
+    fn test_save_config_yaml_writes_slack_inbound_image_max_mb_as_number() {
         let yaml_path = std::env::temp_dir().join(format!(
-            "microclaw_setup_slack_inbound_image_max_bytes_test_{}.yaml",
+            "microclaw_setup_slack_inbound_image_max_mb_test_{}.yaml",
             Utc::now().timestamp_nanos_opt().unwrap_or_default()
         ));
 
@@ -5890,8 +5890,8 @@ sandbox:
             "false".into(),
         );
         values.insert(
-            dynamic_slot_field_key("slack", 1, "inbound_image_max_bytes"),
-            "2097152".into(),
+            dynamic_slot_field_key("slack", 1, "inbound_image_max_mb"),
+            "20".into(),
         );
         values.insert("LLM_PROVIDER".into(), "anthropic".into());
         values.insert("LLM_API_KEY".into(), "key".into());
@@ -5899,7 +5899,7 @@ sandbox:
         save_config_yaml(&yaml_path, &values).unwrap();
         let s = fs::read_to_string(&yaml_path).unwrap();
         assert!(s.contains("capture_unmentioned_images: false"));
-        assert!(s.contains("inbound_image_max_bytes: 2097152"));
+        assert!(s.contains("inbound_image_max_mb: 20"));
 
         let parsed: crate::config::Config = serde_yaml::from_str(&s).unwrap();
         let slack = parsed
@@ -5907,9 +5907,9 @@ sandbox:
             .get("slack")
             .and_then(|v| v.get("accounts"))
             .and_then(|v| v.get("main"))
-            .and_then(|v| v.get("inbound_image_max_bytes"))
+            .and_then(|v| v.get("inbound_image_max_mb"))
             .and_then(|v| v.as_u64());
-        assert_eq!(slack, Some(2_097_152));
+        assert_eq!(slack, Some(20));
 
         let _ = fs::remove_file(&yaml_path);
     }
