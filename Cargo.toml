@@ -20,6 +20,7 @@ default-run = "microclaw"
 [features]
 default = []
 sqlite-vec = ["microclaw-storage/sqlite-vec"]
+journald = ["microclaw-app/journald"]
 
 [dependencies]
 microclaw-core = { path = "crates/microclaw-core" }
