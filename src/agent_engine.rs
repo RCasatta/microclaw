@@ -731,6 +731,15 @@ pub(crate) async fn process_with_agent_impl(
                 }
             }
         }
+        info!(
+            chat_id,
+            iteration = iteration + 1,
+            channel = context.caller_channel,
+            model = %effective_model,
+            messages_count = messages.len(),
+            full_system_prompt = %system_prompt,
+            "LLM REQUEST"
+        );
         let response = if let Some(tx) = event_tx {
             let (llm_tx, mut llm_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
             let forward_tx = tx.clone();
@@ -784,6 +793,25 @@ pub(crate) async fn process_with_agent_impl(
                 )
                 .await?
         };
+
+        let response_text: String = response
+            .content
+            .iter()
+            .filter_map(|block| match block {
+                ResponseContentBlock::Text { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("");
+        info!(
+            chat_id,
+            iteration = iteration + 1,
+            channel = context.caller_channel,
+            model = %effective_model,
+            stop_reason = response.stop_reason.as_deref().unwrap_or("end_turn"),
+            full_response = %response_text,
+            "LLM RESPONSE"
+        );
 
         if let Some(usage) = &response.usage {
             let channel = context.caller_channel.to_string();
